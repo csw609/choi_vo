@@ -22,18 +22,36 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(OpenCV 4.2.0 REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
 add_executable(stereo_vo src/stereo_vo.cpp)
-ament_target_dependencies(stereo_vo rclcpp std_msgs OpenCV sensor_msgs cv_bridge) 
+ament_target_dependencies(
+  stereo_vo 
+  rclcpp 
+  std_msgs 
+  OpenCV 
+  sensor_msgs 
+  cv_bridge
+  nav_msgs
+  geometry_msgs) 
 target_include_directories(stereo_vo PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 
 install(TARGETS stereo_vo
   DESTINATION lib/${PROJECT_NAME})
+
+install(DIRECTORY
+    launch
+    DESTINATION share/${PROJECT_NAME})
+
+install(DIRECTORY
+    config
+    DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

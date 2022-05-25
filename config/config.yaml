@@ -1,0 +1,8 @@
+stereo_vo:
+  ros__parameters:
+    float_number: 3.14
+    dFeatureThresh: 50
+    nMinFeatureNum: 500  
+    dSyncTol: 0.002
+    bUseCamera: false
+    bUseKITTI: true
