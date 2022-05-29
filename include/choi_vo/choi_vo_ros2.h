@@ -4,6 +4,9 @@
 #include <string>
 #include <queue>
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
 
 #include "choi_time/choi_time.h"
 
@@ -17,7 +20,7 @@
 #include "opencv4/opencv2/opencv.hpp"
 
 #define FIRST_FRAME 0
-#define SECOND_FRAME 1
+#define SECOND_FRAME FIRST_FRAME + 1
 
 using namespace std::chrono_literals;
 using std::placeholders::_1;
@@ -41,6 +44,7 @@ public:
         img1Publisher_ = this->create_publisher<sensor_msgs::msg::Image>("left_image", 10);
         img2Publisher_ = this->create_publisher<sensor_msgs::msg::Image>("right_image", 10);
         pathPublisher_ = this->create_publisher<nav_msgs::msg::Path>("path", 10);
+        gtPathPublisher_ = this->create_publisher<nav_msgs::msg::Path>("path_gt", 10);
 
         img1Subscription_ = this->create_subscription<sensor_msgs::msg::Image>("/camera/image_raw", 10, std::bind(&ImagePublisher::img1_callback, this, _1));
         img2Subscription_ = this->create_subscription<sensor_msgs::msg::Image>("/camera2/image_raw", 10, std::bind(&ImagePublisher::img2_callback, this, _1));
@@ -49,41 +53,66 @@ public:
         timer_ = this->create_wall_timer(100ms, std::bind(&ImagePublisher::odom_process, this));
 
         // Init Information
-        nFrameCount = 0;
-        nMinFeatureNum = 500;
-
-        //Simulation
-        // 640x480
-        // dFx = 565.6008952774197;
-        // dFy = 565.6008952774197;
-        // dCx = 320.5;
-        // dCy = 240.5;
-
-        // 1920x1080
-        // dFx = 1696.802685832259;
-        // dFy = 1696.802685832259;
-        // dCx = 960.5;
-        // dCy = 540.5;
-        // dBaseline = 0.1; (m)
+        nFrameCount = FIRST_FRAME;
+        nMinFeatureNum = 100;
 
         // Detector
-        detector_ = cv::FastFeatureDetector::create(25, true); // 25
+        bUseFAST = false;
+        bUseGFTT = true;
+        if (bUseFAST)
+        {
+            detector_ = cv::FastFeatureDetector::create(20, true); // 25
+        }
+        else if (bUseGFTT)
+        {
+            nMaxFeatureNumGFTT = 300;
+            nMinDist = 30;
+            dQualityLev = 0.01;
 
-        // KITTI
-        dFx = 7.18856 * 100.0;
-        dFy = dFx;
-        dCx = 6.071928 * 100.0;
-        dCy = 1.852157 * 100.0;
+            // KITTI parameter
+            // nMaxFeatureNumGFTT = 300;
+            // nMinDist = 30;
+            // dQualityLev = 0.01;
+        }
 
-        dIntrintsic[0] = dFx;
-        dIntrintsic[1] = 0.0;
-        dIntrintsic[2] = dCx;
-        dIntrintsic[3] = 0.0;
-        dIntrintsic[4] = dFy;
-        dIntrintsic[5] = dCy;
-        dIntrintsic[6] = 0.0;
-        dIntrintsic[7] = 0.0;
-        dIntrintsic[8] = 1.0;
+        // recoverPose
+        dRansacThresh = 1.0;
+
+        // Simulation
+        if (true)
+        {
+            // 640x480
+            dFx = 565.6008952774197;
+            dFy = 565.6008952774197;
+            dCx = 320.5;
+            dCy = 240.5;
+
+            // 1920x1080
+            // dFx = 1696.802685832259;
+            // dFy = 1696.802685832259;
+            // dCx = 960.5;
+            // dCy = 540.5;
+            // dBaseline = 0.1; (m)
+        }
+        else
+        {
+
+            // KITTI
+            // dFx = 7.18856 * 100.0;
+            // dFy = dFx;
+            // dCx = 6.071928 * 100.0;
+            // dCy = 1.852157 * 100.0;
+
+            // dIntrintsic[0] = dFx;
+            // dIntrintsic[1] = 0.0;
+            // dIntrintsic[2] = dCx;
+            // dIntrintsic[3] = 0.0;
+            // dIntrintsic[4] = dFy;
+            // dIntrintsic[5] = dCy;
+            // dIntrintsic[6] = 0.0;
+            // dIntrintsic[7] = 0.0;
+            // dIntrintsic[8] = 1.0;
+        }
 
         // No distortion case
         dDistortion[0] = 0.0;
@@ -92,11 +121,23 @@ public:
         dDistortion[3] = 0.0;
 
         cvCameraMat = cv::Mat(3, 3, CV_64FC1, dIntrintsic);
+        cvCameraMatIv = cvCameraMat.inv();
         cvDistCoeffMat = cv::Mat(4, 1, CV_64FC1, dDistortion);
 
         dBaseline = 0.54;
 
+        fsGroundTruth.open("/home/csw/dataset/KITTI/sequence/00/00_gt.txt");
+        for (int i = 0; i < nFrameCount; i++)
+        {
+            std::string strGT;
+            std::getline(fsGroundTruth, strGT);
+        }
+
+        cvCurT = cv::Mat::zeros(3, 1, CV_64FC1);
+        cvCurR = cv::Mat::eye(3, 3, CV_64FC1);
+
         msgPath.header.frame_id = "camera_optical";
+        msgGtPath.header.frame_id = "camera_optical";
     }
 
 private:
@@ -107,18 +148,19 @@ private:
 
     void processFirstFrame(cv::Mat &cvLeftImage);
     void processSecondFrame(cv::Mat &cvLeftImage);
-    void processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage);
+    bool processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage);
 
+    void detectFeature(cv::Mat &cvImage, std::vector<cv::Point2f> &vKp);
     void trackFeature(cv::Mat &cvLeftImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked);
 
     void findRT(cv::Mat &cvRotMat, cv::Mat &cvTransMat, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked);
     double findScale(cv::Mat &cvLeftImage, cv::Mat &cvRightImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked, cv::Mat &cvRotMat, cv::Mat &cvTransMat);
 
-
     void visualizeFeature(cv::Mat &cvLeftImage, cv::Mat &cvRightImage);
     void visualizePath();
 
     void readKitti(cv::Mat &cvLeftImage, cv::Mat &cvRightImage);
+    void readKittiGT();
 
     rclcpp::TimerBase::SharedPtr timer_;
 
@@ -127,6 +169,7 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img1Publisher_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr img2Publisher_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pathPublisher_;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr gtPathPublisher_;
 
     // rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr kittiLeftPublisher_;
     // rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr kittiRightPublisher_;
@@ -145,6 +188,8 @@ private:
 
     // Feature Detector
     cv::Ptr<cv::FastFeatureDetector> detector_;
+    bool bUseFAST;
+    bool bUseGFTT; // Good Feature To Track
 
     // Keypoints Vector
     std::vector<cv::Point2f> vRefKpLeft;
@@ -164,18 +209,25 @@ private:
     double dBaseline;
 
     cv::Mat cvCameraMat;
+    cv::Mat cvCameraMatIv;
     cv::Mat cvDistCoeffMat;
 
     // Frame information
     int nFrameCount;
     int nMinFeatureNum;
+    int nMaxFeatureNumGFTT;
+    int nMinDist;
+    double dQualityLev;
+    double dRansacThresh;
     cv::Mat cvCurR;
     cv::Mat cvCurT;
     nav_msgs::msg::Path msgPath;
+    nav_msgs::msg::Path msgGtPath;
 
-    //source
+    // source
     bool bUseCamera;
     bool bUseKITTI;
+    std::ifstream fsGroundTruth;
 };
 
 void ImagePublisher::timer_callback()
@@ -205,7 +257,7 @@ void ImagePublisher::odom_process()
     cv::Mat cvLeftImage;
     cv::Mat cvRightImage;
 
-    RCLCPP_INFO(this->get_logger(), "Loop Start");
+    // RCLCPP_INFO(this->get_logger(), "Loop Start");
     if (!left_image_buf.empty() && !right_image_buf.empty())
     {
         // double dTime;
@@ -246,9 +298,10 @@ void ImagePublisher::odom_process()
             // eecdTime =
         }
     }
-    if (true)
+    if (false   )
     {
         readKitti(cvLeftImage, cvRightImage);
+        readKittiGT();
     }
 
     if (!cvLeftImage.empty() && !cvRightImage.empty())
@@ -261,10 +314,10 @@ void ImagePublisher::odom_process()
         {
             processFirstFrame(cvLeftImage);
         }
-        else if (nFrameCount == SECOND_FRAME)
-        {
-            processSecondFrame(cvLeftImage);
-        }
+        // else if (nFrameCount == SECOND_FRAME)
+        // {
+        //     processSecondFrame(cvLeftImage);
+        // }
         else
         {
             processFrame(cvLeftImage, cvRightImage);
@@ -277,7 +330,6 @@ void ImagePublisher::odom_process()
         }
 
         visualizeFeature(cvLeftImage, cvRightImage);
-        
 
         // RCLCPP_INFO(this->get_logger(), "size : %d", vRefKpLeft.size());
     }
@@ -287,14 +339,8 @@ void ImagePublisher::odom_process()
 
 void ImagePublisher::processFirstFrame(cv::Mat &cvLeftImage)
 {
-    std::vector<cv::KeyPoint> vKpTmp;
-    detector_->detect(cvLeftImage, vKpTmp);
-    vRefKpLeft.clear();
-    for (auto &pts : vKpTmp)
-    {
-        vRefKpLeft.push_back(pts.pt);
-    }
 
+    detectFeature(cvLeftImage, vRefKpLeft);
     nFrameCount++;
 }
 
@@ -312,17 +358,9 @@ void ImagePublisher::processSecondFrame(cv::Mat &cvLeftImage)
     RCLCPP_INFO(this->get_logger(), "ty : %lf", cvTransMat.at<double>(1, 0));
     RCLCPP_INFO(this->get_logger(), "tz : %lf", cvTransMat.at<double>(2, 0));
 
-    
-
     if (static_cast<int>(vCurKpLeftTracked.size()) < nMinFeatureNum)
     {
-        std::vector<cv::KeyPoint> vKpTmp;
-        detector_->detect(cvLeftImage, vKpTmp);
-        vRefKpLeft.clear();
-        for (auto &pts : vKpTmp)
-        {
-            vRefKpLeft.push_back(pts.pt);
-        }
+        detectFeature(cvLeftImage, vRefKpLeft);
     }
     else
     {
@@ -334,7 +372,7 @@ void ImagePublisher::processSecondFrame(cv::Mat &cvLeftImage)
     nFrameCount++;
 }
 
-void ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
+bool ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
 {
     // RCLCPP_INFO(this->get_logger(), "process frame start");
     std::vector<cv::Point2f> vRefKpLeftTracked;
@@ -349,29 +387,25 @@ void ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
     cv::Mat cvTransMat;
     findRT(cvRotMat, cvTransMat, vRefKpLeftTracked, vCurKpLeftTracked);
 
-    RCLCPP_INFO(this->get_logger(), "tx : %lf", cvTransMat.at<double>(0, 0));
-    RCLCPP_INFO(this->get_logger(), "ty : %lf", cvTransMat.at<double>(1, 0));
-    RCLCPP_INFO(this->get_logger(), "tz : %lf", cvTransMat.at<double>(2, 0));
+    RCLCPP_INFO(this->get_logger(), "tx : %lf, ty : %lf, tz : %lf", cvTransMat.at<double>(0, 0), cvTransMat.at<double>(1, 0), cvTransMat.at<double>(2, 0));
 
-    RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvRotMat.at<double>(0, 0), cvRotMat.at<double>(0, 1), cvRotMat.at<double>(0, 2));
-    RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvRotMat.at<double>(1, 0), cvRotMat.at<double>(1, 1), cvRotMat.at<double>(1, 2));
-    RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvRotMat.at<double>(2, 0), cvRotMat.at<double>(2, 1), cvRotMat.at<double>(2, 2));
+    // RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvRotMat.at<double>(0, 0), cvRotMat.at<double>(0, 1), cvRotMat.at<double>(0, 2));
+    // RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvRotMat.at<double>(1, 0), cvRotMat.at<double>(1, 1), cvRotMat.at<double>(1, 2));
+    // RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvRotMat.at<double>(2, 0), cvRotMat.at<double>(2, 1), cvRotMat.at<double>(2, 2));
 
-    double dScale = findScale(cvLeftImage, cvRightImage, vRefKpLeftTracked , vCurKpLeftTracked, cvRotMat, cvTransMat);
+    double dScale = findScale(cvLeftImage, cvRightImage, vRefKpLeftTracked, vCurKpLeftTracked, cvRotMat, cvTransMat);
 
-    cvCurT = cvCurT + dScale * cvCurR * cvTransMat;
-    cvCurR = cvCurR * cvRotMat;
-    
+    if (!std::isnan(dScale) && dScale > 0.1 && dScale < 5.0)
+    {
+
+        cvCurT = cvCurT + dScale * cvCurR * cvTransMat;
+        cvCurR = cvCurR * cvRotMat;
+    }
+
     seok::TimeChecker tVecTime;
     if (static_cast<int>(vCurKpLeftTracked.size()) < nMinFeatureNum)
     {
-        std::vector<cv::KeyPoint> vKpTmp;
-        detector_->detect(cvLeftImage, vKpTmp);
-        vRefKpLeft.clear();
-        for (auto &pts : vKpTmp)
-        {
-            vRefKpLeft.push_back(pts.pt);
-        }
+        detectFeature(cvLeftImage, vRefKpLeft);
     }
     else
     {
@@ -380,6 +414,8 @@ void ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
 
     tVecTime.interval("vector copy");
     nFrameCount++;
+
+    return true;
 }
 
 double ImagePublisher::findScale(cv::Mat &cvLeftImage, cv::Mat &cvRightImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked, cv::Mat &cvRotMat, cv::Mat &cvTransMat)
@@ -390,83 +426,129 @@ double ImagePublisher::findScale(cv::Mat &cvLeftImage, cv::Mat &cvRightImage, st
     std::vector<cv::Point2f> vRefKpLeftNorm;
     std::vector<cv::Point2f> vCurKpLeftNorm;
     cv::Mat cvMonoDep4D;
-    
-    cv::Mat cvProjId  = cv::Mat::eye(3,4,CV_64FC1);
-    cv::Mat cvProjP2C;                                  // projection matrix Identity, prev to cur
-    cv::Mat cvTransP2C = - cvRotMat.t() * cvTransMat;
-    cv::hconcat(cvRotMat.t(), cvTransP2C  ,cvProjP2C);
+    // std::vector<cv::Vec4f> vMonoDep4D;
 
-    //std::cout << cvProjP2C << std::endl;
-    cv::Mat cvCameraMatIv = cvCameraMat.inv();
+    cv::Mat cvProjId = cv::Mat::eye(3, 4, CV_64FC1); // Ref is ref
+    cv::Mat cvProjP2C;                               // projection matrix Identity, prev to cur
+    cv::Mat cvTransP2C = -cvRotMat.t() * cvTransMat;
+    cv::hconcat(cvRotMat.t(), cvTransP2C, cvProjP2C);
 
+    // std::cout << cvProjP2C << std::endl;
+
+    // RCLCPP_INFO(this->get_logger(), " Camera Inv");
     // RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvCameraMatIv.at<double>(0, 0), cvCameraMatIv.at<double>(0, 1), cvCameraMatIv.at<double>(0, 2));
     // RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvCameraMatIv.at<double>(1, 0), cvCameraMatIv.at<double>(1, 1), cvCameraMatIv.at<double>(1, 2));
     // RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvCameraMatIv.at<double>(2, 0), cvCameraMatIv.at<double>(2, 1), cvCameraMatIv.at<double>(2, 2));
 
     int nVecSize = static_cast<int>(vRefKpLeftTracked.size());
-    for(int i = 0; i < nVecSize; i++){
-        cv::Mat cvRef(3,1,CV_64FC1);
-        cvRef.at<double>(0,0) = vRefKpLeftTracked[i].x;
-        cvRef.at<double>(1,0) = vRefKpLeftTracked[i].y;
-        cvRef.at<double>(2,0) = 1.0;
-        
-        cv::Mat cvCur(3,1,CV_64FC1);
-        cvCur.at<double>(0,0) = vCurKpLeftTracked[i].x;
-        cvCur.at<double>(1,0) = vCurKpLeftTracked[i].y;
-        cvCur.at<double>(2,0) = 1.0;
+    for (int i = 0; i < nVecSize; i++)
+    {
+        cv::Mat cvRef(3, 1, CV_64FC1);
+        cvRef.at<double>(0, 0) = vRefKpLeftTracked[i].x;
+        cvRef.at<double>(1, 0) = vRefKpLeftTracked[i].y;
+        cvRef.at<double>(2, 0) = 1.0;
 
+        cv::Mat cvCur(3, 1, CV_64FC1);
+        cvCur.at<double>(0, 0) = vCurKpLeftTracked[i].x;
+        cvCur.at<double>(1, 0) = vCurKpLeftTracked[i].y;
+        cvCur.at<double>(2, 0) = 1.0;
+
+        // RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvCur.at<double>(0, 0), cvCur.at<double>(1, 0), cvCur.at<double>(2, 0));
         cvRef = cvCameraMatIv * cvRef;
         cvCur = cvCameraMatIv * cvCur;
 
-        cv::Point2f pt2Ref(cvRef.at<double>(0,0), cvRef.at<double>(1,0)); 
-        cv::Point2f pt2Cur(cvCur.at<double>(0,0), cvCur.at<double>(1,0));
+        // RCLCPP_INFO(this->get_logger(), " %lf %lf %lf", cvCur.at<double>(0, 0), cvCur.at<double>(1, 0), cvCur.at<double>(2, 0));
 
-        //RCLCPP_INFO(this->get_logger(), "ptRef : %lf   %lf", pt2Ref.x, pt2Ref.y);
-        //RCLCPP_INFO(this->get_logger(), "ptCur : %lf   %lf", pt2Cur.x, pt2Cur.y);
+        cv::Point2f pt2Ref(cvRef.at<double>(0, 0), cvRef.at<double>(1, 0));
+        cv::Point2f pt2Cur(cvCur.at<double>(0, 0), cvCur.at<double>(1, 0));
+
+        // RCLCPP_INFO(this->get_logger(), "ptRef : %lf   %lf", pt2Ref.x, pt2Ref.y);
+        // RCLCPP_INFO(this->get_logger(), "ptCur : %lf   %lf", pt2Cur.x, pt2Cur.y);
         vRefKpLeftNorm.push_back(pt2Ref);
         vCurKpLeftNorm.push_back(pt2Cur);
+    }
 
+    cv::triangulatePoints(cvProjId, cvProjP2C, vRefKpLeftNorm, vCurKpLeftNorm, cvMonoDep4D);
+    // cv::triangulatePoints(cvProjId,cvProjP2C,vRefKpLeftNorm,vCurKpLeftNorm,vMonoDep4D);
+
+    // RCLCPP_INFO(this->get_logger(), "rowcol : %d  %d ",cvMonoDep4D.rows, cvMonoDep4D.cols);
+
+    for (int i = 0; i < nVecSize; i++)
+    {
+        // RCLCPP_INFO(this->get_logger(), "4d : %lf %lf %lf %lf",
+        // cvMonoDep4D.at<double>(0,i), cvMonoDep4D.at<double>(1,i), cvMonoDep4D.at<double>(2,i), cvMonoDep4D.at<double>(3,i) );
     }
-    
-    cv::triangulatePoints(cvProjId,cvProjP2C,vRefKpLeftNorm,vCurKpLeftNorm,cvMonoDep4D);
-    for(int i = 0; i < nVecSize; i++){
-        //RCLCPP_INFO(this->get_logger(), "4d : %lf %lf %lf %lf", 
-        //cvMonoDep4D.at<double>(0,i), cvMonoDep4D.at<double>(1,i), cvMonoDep4D.at<double>(2,i), cvMonoDep4D.at<double>(3,i) );
-    }
-    //find scale
+
     std::vector<cv::Point2f> vCurKpRight;
     std::vector<uchar> vCurStatus;
     cv::calcOpticalFlowPyrLK(cvLeftImage, cvRightImage, vCurKpLeftTracked, vCurKpRight, vCurStatus, cv::noArray(), cv::Size(21, 21), 3);
 
-    //int nVecSize = static_cast<int>(vCurStatus.size());
-    double dSumScale = 0;
+    // int nVecSize = static_cast<int>(vCurStatus.size());
+    // double dSumScale = 0.0;
+    int nInlierCnt = 0;
+
+    double dScaleArr[1000];
     for (int i = 0; i < nVecSize; i++)
     {
         if (vCurStatus[i])
         { // if tracked;
             double dLeftX = vCurKpLeftTracked[i].x;
-            //double dLeftY = vCurKpLeftTracked[i].y;
+            // double dLeftY = vCurKpLeftTracked[i].y;
 
             double dRightX = vCurKpRight[i].x;
-            //double dRightY = vCurKpRight[i].y;
-            //RCLCPP_INFO(this->get_logger(), "X : %lf   %lf", dLeftX, dRightX);
-            if (dLeftX - dRightX < 1) continue; // skip outlier with too small disparity
+            // double dRightY = vCurKpRight[i].y;
+            // RCLCPP_INFO(this->get_logger(), "X : %lf   %lf", dLeftX, dRightX);
+            if (dLeftX - dRightX < 1)
+                continue; // skip outlier with too small disparity
 
-            //RCLCPP_INFO(this->get_logger(), "mono : %lf   %lf", cvMonoDep4D.at<double>(2,i), cvMonoDep4D.at<double>(3,i));
-            double dMonoDep = cvMonoDep4D.at<double>(2,i) / cvMonoDep4D.at<double>(3,i);
-            if(dMonoDep < 0) continue;   // skip outlier
-                
-            double dStereoDep = (dBaseline * dFx) / (dLeftX - dRightX);
+            // RCLCPP_INFO(this->get_logger(), "mono : %lf   %lf", cvMonoDep4D.at<float>(2,i), cvMonoDep4D.at<float>(3,i));
 
-            //RCLCPP_INFO(this->get_logger(), "dep : %lf   %lf", dMonoDep, dStereoDep);
-            dSumScale += dStereoDep / dMonoDep;
+            float fMonoDep = cvMonoDep4D.at<float>(2, i) / cvMonoDep4D.at<float>(3, i);
+            // double dMonoDep = vMonoDep4D[i][2] / vMonoDep4D[i][3];
+
+            if (fMonoDep > 0.1 && fMonoDep < 100)
+            {
+
+                double dStereoDep = (dBaseline * dFx) / (dLeftX - dRightX);
+
+                // RCLCPP_INFO(this->get_logger(), "dep : %lf   %lf", dMonoDep, dStereoDep);
+                // dSumScale += dStereoDep / static_cast<double>(fMonoDep);
+                // nInlierCnt++;
+                dScaleArr[nInlierCnt++] = dStereoDep / static_cast<double>(fMonoDep);
+            }
         }
     }
-    dScale = dSumScale / static_cast<double>(nVecSize);
 
-    //RCLCPP_INFO(this->get_logger(), "scale : %lf", dScale);
+    // remove outlier
+    std::sort(dScaleArr, dScaleArr + nInlierCnt);
+
+    double dQ1 = dScaleArr[static_cast<int>(nInlierCnt / 4)];
+    double dQ3 = dScaleArr[static_cast<int>(nInlierCnt / 4 * 3)];
+    double dIqr = dQ3 - dQ1;
+    double dLower = dQ1 - (dIqr * 1.5);
+    double dUpper = dQ3 + (dIqr * 1.5);
+
+    double dSumScale = 0.0;
+    double nInlierCnt2 = 0;
+    for (int i = 0; i < nInlierCnt; i++)
+    {
+        if (dScaleArr[i] > dLower && dScaleArr[i] < dUpper)
+        {
+            nInlierCnt2++;
+            dSumScale += dScaleArr[i];
+        }
+    }
+
+    dScale = dSumScale / nInlierCnt2;
+
+    // dScale = dSumScale / static_cast<double>(nInlierCnt); // use mean val
+    //  if(nInlierCnt < 500){
+    //      RCLCPP_INFO(this->get_logger(), "warning  %d", nInlierCnt);
+    //  }
+
+    RCLCPP_INFO(this->get_logger(), "scale : %lf", dScale);
     return dScale;
-    //return 1.0;
+    // return 1.0;
 }
 
 void ImagePublisher::findRT(cv::Mat &cvRotMat, cv::Mat &cvTransMat, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked)
@@ -475,11 +557,33 @@ void ImagePublisher::findRT(cv::Mat &cvRotMat, cv::Mat &cvTransMat, std::vector<
     // later consider distortion
     seok::TimeChecker tFindTime;
     cv::Mat cvEsMat;
-    cvEsMat = cv::findEssentialMat(vCurKpLeftTracked, vRefKpLeftTracked, cvCameraMat); //, cv::RANSAC, 0.999, 1.0);
+    cvEsMat = cv::findEssentialMat(vCurKpLeftTracked, vRefKpLeftTracked, cvCameraMat, cv::RANSAC, 0.999, dRansacThresh);
     tFindTime.interval("Find Essen");
     seok::TimeChecker tReTime;
     cv::recoverPose(cvEsMat, vCurKpLeftTracked, vRefKpLeftTracked, cvCameraMat, cvRotMat, cvTransMat);
     tReTime.interval("recover");
+}
+
+void ImagePublisher::detectFeature(cv::Mat &cvImage, std::vector<cv::Point2f> &vKp)
+{
+
+    if (bUseFAST)
+    {
+        std::vector<cv::KeyPoint> vKpTmp;
+        detector_->detect(cvImage, vKpTmp);
+        vKp.clear();
+        for (auto &pts : vKpTmp)
+        {
+            vKp.push_back(pts.pt);
+        }
+    }
+    else if (bUseGFTT)
+    {
+        cv::Mat mask = cv::Mat(cvImage.rows, cvImage.cols, CV_8UC1, cv::Scalar(255));
+
+        // vKp.clear();
+        cv::goodFeaturesToTrack(cvImage, vKp, nMaxFeatureNumGFTT - vKp.size(), dQualityLev, nMinDist, mask); //, 3, false, 0.04)
+    }
 }
 
 void ImagePublisher::trackFeature(cv::Mat &cvLeftImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked)
@@ -497,8 +601,8 @@ void ImagePublisher::trackFeature(cv::Mat &cvLeftImage, std::vector<cv::Point2f>
     {
         if (vCurStatus[i]) // if tracked
         {
-            vCurKpLeftTracked.push_back(vCurKpLeftTmp[i]);
             vRefKpLeftTracked.push_back(vRefKpLeft[i]);
+            vCurKpLeftTracked.push_back(vCurKpLeftTmp[i]);
         }
     }
     tTrackTime.interval("Feature Tracking");
@@ -526,15 +630,15 @@ void ImagePublisher::visualizeFeature(cv::Mat &cvLeftImage, cv::Mat &cvRightImag
     // img2Publisher_->publish(imageVisual2);
 }
 
-void ImagePublisher::visualizePath(){
+void ImagePublisher::visualizePath()
+{
     geometry_msgs::msg::PoseStamped poseStamp;
 
     poseStamp.pose.position.x = cvCurT.at<double>(0, 0);
     poseStamp.pose.position.y = cvCurT.at<double>(1, 0);
     poseStamp.pose.position.z = cvCurT.at<double>(2, 0);
-    
-    msgPath.poses.push_back(poseStamp);
 
+    msgPath.poses.push_back(poseStamp);
 
     pathPublisher_->publish(msgPath);
 }
@@ -547,7 +651,7 @@ void ImagePublisher::img1_callback(const sensor_msgs::msg::Image::SharedPtr imgM
 
 void ImagePublisher::img2_callback(const sensor_msgs::msg::Image::SharedPtr imgMsg_)
 {
-    RCLCPP_INFO(this->get_logger(), "img2 subscribed");
+    //RCLCPP_INFO(this->get_logger(), "img2 subscribed");
     right_image_buf.push(imgMsg_);
 }
 
@@ -574,9 +678,37 @@ void ImagePublisher::readKitti(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
     else if (nFrameCount < 10000)
     {
         img_l_path = "/home/csw/dataset/KITTI/sequence/00/image_0/00" + std::to_string(nFrameCount) + ".png";
-        img_r_path = "/home/csw/dataset/KITTI/sequence/00/image_0/00" + std::to_string(nFrameCount) + ".png";
+        img_r_path = "/home/csw/dataset/KITTI/sequence/00/image_1/00" + std::to_string(nFrameCount) + ".png";
     }
 
     cvLeftImage = cv::imread(img_l_path, cv::IMREAD_GRAYSCALE);
     cvRightImage = cv::imread(img_r_path, cv::IMREAD_GRAYSCALE);
+}
+
+void ImagePublisher::readKittiGT()
+{
+    std::string strGT;
+    std::getline(fsGroundTruth, strGT);
+
+    std::vector<std::string> vecToken;
+    std::istringstream issGT(strGT);
+    std::string strBuffer;
+    vecToken.clear();
+    while (getline(issGT, strBuffer, ' '))
+    {
+        vecToken.push_back(strBuffer);
+        // RCLCPP_INFO(this->get_logger(), "%s",strBuffer.c_str());
+    }
+
+    if (true)
+    {
+        geometry_msgs::msg::PoseStamped poseStamp;
+        poseStamp.pose.position.x = std::stod(vecToken[3].c_str());
+        poseStamp.pose.position.y = std::stod(vecToken[7].c_str());
+        poseStamp.pose.position.z = std::stod(vecToken[11].c_str());
+
+        msgGtPath.poses.push_back(poseStamp);
+
+        gtPathPublisher_->publish(msgGtPath);
+    }
 }
