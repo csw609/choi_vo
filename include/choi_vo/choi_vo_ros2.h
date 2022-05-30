@@ -16,6 +16,12 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav_msgs/msg/path.hpp"
 
+#include <tf2/exceptions.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2_ros/static_transform_broadcaster.h>
+
 #include "cv_bridge/cv_bridge.h"
 #include "opencv4/opencv2/opencv.hpp"
 
@@ -49,9 +55,6 @@ public:
         img1Subscription_ = this->create_subscription<sensor_msgs::msg::Image>("/camera/image_raw", 10, std::bind(&ImagePublisher::img1_callback, this, _1));
         img2Subscription_ = this->create_subscription<sensor_msgs::msg::Image>("/camera2/image_raw", 10, std::bind(&ImagePublisher::img2_callback, this, _1));
 
-        // timer_ = this->create_wall_timer(500ms, std::bind(&ImagePublisher::timer_callback,this));
-        timer_ = this->create_wall_timer(100ms, std::bind(&ImagePublisher::odom_process, this));
-
         // Init Information
         nFrameCount = FIRST_FRAME;
         
@@ -59,8 +62,8 @@ public:
         bUseFAST = false;
         bUseGFTT = true;
         // source
-        bUseCamera = false;
-        bUseKITTI = true;
+        bUseCamera = true;
+        bUseKITTI = false;
 
         if (bUseFAST)
         {
@@ -72,7 +75,7 @@ public:
             // simulation
             if (bUseCamera)
             {
-                nMaxFeatureNumGFTT = 200;
+                nMaxFeatureNumGFTT = 300;
                 nMinDist = 30;
                 dQualityLev = 0.01;
             }
@@ -80,8 +83,14 @@ public:
             {
                 // KITTI parameter
                 nMaxFeatureNumGFTT = 300;
-                nMinDist = 30;
+                nMinDist = 31;
                 dQualityLev = 0.01;
+
+                //cur best
+                // nMaxFeatureNumGFTT = 300;
+                // nMinDist = 31;
+                // dQualityLev = 0.01;
+
             }
         }
 
@@ -92,9 +101,16 @@ public:
         if (bUseCamera)
         {
             // 640x480
-            dFx = 565.6008952774197;
-            dFy = 565.6008952774197;
-            dCx = 320.5;
+            // dFx = 565.6008952774197;
+            // dFy = 565.6008952774197;
+            // dCx = 320.5;
+            // dCy = 240.5;
+            // dBaseline = 0.1; //(m)
+
+            // 1280 X 480
+            dFx = 1131.2017905548394;
+            dFy = 1131.2017905548394;
+            dCx = 640.5;
             dCy = 240.5;
             dBaseline = 0.1; //(m)
 
@@ -147,7 +163,21 @@ public:
         cvCurR = cv::Mat::eye(3, 3, CV_64FC1);
 
         msgPath.header.frame_id = "camera_optical";
-        msgGtPath.header.frame_id = "camera_optical";
+        if(bUseCamera){
+            msgGtPath.header.frame_id = "map";
+        }
+        else if(bUseKITTI){
+            msgGtPath.header.frame_id = "camera_optical";
+        }
+
+        //TF
+        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+        transform_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+        cvFirstPosition = cv::Mat::zeros(3,1,CV_64FC1);
+        tf_publisher_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
+
+        // timer_ = this->create_wall_timer(500ms, std::bind(&ImagePublisher::timer_callback,this));
+        timer_ = this->create_wall_timer(30ms, std::bind(&ImagePublisher::odom_process, this));
     }
 
 private:
@@ -163,14 +193,16 @@ private:
     void detectFeature(cv::Mat &cvImage, std::vector<cv::Point2f> &vKp);
     void trackFeature(cv::Mat &cvLeftImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked);
 
-    void findRT(cv::Mat &cvRotMat, cv::Mat &cvTransMat, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked);
+    void   findRT(cv::Mat &cvRotMat, cv::Mat &cvTransMat, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked);
     double findScale(cv::Mat &cvLeftImage, cv::Mat &cvRightImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked, cv::Mat &cvRotMat, cv::Mat &cvTransMat);
 
     void visualizeFeature(cv::Mat &cvLeftImage, cv::Mat &cvRightImage);
     void visualizePath();
 
     void readKitti(cv::Mat &cvLeftImage, cv::Mat &cvRightImage);
-    void readKittiGT();
+    void readPubKittiGT();
+
+    void broadTF();
 
     rclcpp::TimerBase::SharedPtr timer_;
 
@@ -238,6 +270,12 @@ private:
     bool bUseCamera;
     bool bUseKITTI;
     std::ifstream fsGroundTruth;
+
+    //TF
+    std::shared_ptr<tf2_ros::TransformListener> transform_listener_{nullptr};
+    std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+    cv::Mat cvFirstPosition;
+    std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_publisher_;
 };
 
 void ImagePublisher::timer_callback()
@@ -313,11 +351,41 @@ void ImagePublisher::odom_process()
                 // eecdTime =
             }
         }
+
+        std::string fromFrameRel = "base_footprint";
+        std::string toFrameRel = "odom";
+
+        geometry_msgs::msg::TransformStamped msgTF;
+
+        try{
+            msgTF = tf_buffer_->lookupTransform(toFrameRel,fromFrameRel,tf2::TimePointZero);
+        }
+        catch(tf2::TransformException &ex){
+            RCLCPP_INFO(
+            this->get_logger(), "Could not transform %s to %s: %s",
+            toFrameRel.c_str(), fromFrameRel.c_str(), ex.what());
+        }
+        if(nFrameCount == FIRST_FRAME){
+            cvFirstPosition.at<double>(0,0) = msgTF.transform.translation.x;
+            cvFirstPosition.at<double>(1,0) = msgTF.transform.translation.y;
+            cvFirstPosition.at<double>(2,0) = msgTF.transform.translation.z;
+        }
+        else{
+            geometry_msgs::msg::PoseStamped poseStamp;
+            poseStamp.pose.position.x = msgTF.transform.translation.x - cvFirstPosition.at<double>(0,0);
+            poseStamp.pose.position.y = msgTF.transform.translation.y - cvFirstPosition.at<double>(1,0);
+            poseStamp.pose.position.z = msgTF.transform.translation.z - cvFirstPosition.at<double>(2,0);
+
+            msgGtPath.poses.push_back(poseStamp);
+
+            gtPathPublisher_->publish(msgGtPath);
+        }
+
     }
     else if (bUseKITTI)
     {
         readKitti(cvLeftImage, cvRightImage);
-        readKittiGT();
+        readPubKittiGT();
     }
 
     if (!cvLeftImage.empty() && !cvRightImage.empty())
@@ -350,6 +418,7 @@ void ImagePublisher::odom_process()
         // RCLCPP_INFO(this->get_logger(), "size : %d", vRefKpLeft.size());
     }
 
+    broadTF();
     dur.interval("One Loop odomProcess");
 }
 
@@ -411,13 +480,10 @@ bool ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
 
     double dScale = findScale(cvLeftImage, cvRightImage, vRefKpLeftTracked, vCurKpLeftTracked, cvRotMat, cvTransMat);
 
-    if (!std::isnan(dScale) && dScale > 0.1 && dScale < 5.0)
+    //if (!std::isnan(dScale) && dScale > 0.1 && dScale < 5.0)
+    if (!std::isnan(dScale) && dScale > 0.01 && dScale < 2.0)
     {
-
         cvCurT = cvCurT + dScale * cvCurR * cvTransMat;
-        cvCurR = cvCurR * cvRotMat;
-    }
-    else if(!std::isnan(dScale) && dScale < 5.0 ){
         cvCurR = cvCurR * cvRotMat;
     }
 
@@ -786,7 +852,7 @@ void ImagePublisher::readKitti(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
     cvRightImage = cv::imread(img_r_path, cv::IMREAD_GRAYSCALE);
 }
 
-void ImagePublisher::readKittiGT()
+void ImagePublisher::readPubKittiGT()
 {
     std::string strGT;
     std::getline(fsGroundTruth, strGT);
@@ -812,4 +878,28 @@ void ImagePublisher::readKittiGT()
 
         gtPathPublisher_->publish(msgGtPath);
     }
+}
+
+void ImagePublisher::broadTF()
+{
+    rclcpp::Time now = this->get_clock()->now();
+    geometry_msgs::msg::TransformStamped msgTF;
+
+    msgTF.header.stamp = now;
+    msgTF.header.frame_id = "map";
+    msgTF.child_frame_id  = "camera_optical";
+
+    msgTF.transform.translation.x  = 0.0;
+    msgTF.transform.translation.y  = 0.0;
+    msgTF.transform.translation.z  = 0.0;
+
+    tf2::Quaternion tfQ;
+    tfQ.setRPY(-1.57079632675, 0.0, -1.57079632675);
+    //1.57079632675
+    msgTF.transform.rotation.x = tfQ.x();
+    msgTF.transform.rotation.y = tfQ.y();
+    msgTF.transform.rotation.z = tfQ.z();
+    msgTF.transform.rotation.w = tfQ.w();
+
+    tf_publisher_->sendTransform(msgTF);
 }

@@ -24,6 +24,8 @@ find_package(OpenCV 4.2.0 REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2 REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -37,7 +39,9 @@ ament_target_dependencies(
   sensor_msgs 
   cv_bridge
   nav_msgs
-  geometry_msgs) 
+  geometry_msgs
+  tf2_ros
+  tf2) 
 target_include_directories(stereo_vo PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
