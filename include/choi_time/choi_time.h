@@ -24,10 +24,20 @@ namespace seok {
             t2 = std::chrono::system_clock::now();
             std::chrono::duration<double> dur = t2 - t1;
 
-            //std::cout << "Time taken for " << str  << " : " << dur.count() << " s" << "\n";
+            std::cout << "Time taken for " << str  << " : " << dur.count() << " s" << std::endl;
             //ROS_INFO("Time taken for %s : %lfs", str.c_str() , dur.count());
-            RCLCPP_INFO(this->get_logger(), "Cur Tracked Size : %d", vCurKpLeftTracked.size());
         }
+
+        std::string returnInterval(std::string str){
+            t2 = std::chrono::system_clock::now();
+            std::chrono::duration<double> dur = t2 - t1;
+
+            std::cout << "Time taken for " << str  << " : " << dur.count() << " s" << std::endl;
+            
+            return "Time taken for " + str  + " : " + std::to_string(dur.count()) + " s\n";  
+        }
+
+
 
     private:
         std::chrono::time_point<std::chrono::system_clock> t1;
