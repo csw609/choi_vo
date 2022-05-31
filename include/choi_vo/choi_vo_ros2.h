@@ -57,13 +57,15 @@ public:
 
         // Init Information
         nFrameCount = FIRST_FRAME;
-        
+        dParallaxThresh = 3.0;
+
         // Detector
         bUseFAST = false;
         bUseGFTT = true;
         // source
-        bUseCamera = true;
-        bUseKITTI = false;
+        bUseCamera = false;
+        bUseKITTI = true;
+        
 
         if (bUseFAST)
         {
@@ -75,8 +77,8 @@ public:
             // simulation
             if (bUseCamera)
             {
-                nMaxFeatureNumGFTT = 300;
-                nMinDist = 30;
+                nMaxFeatureNumGFTT = 250;
+                nMinDist = 31;
                 dQualityLev = 0.01;
             }
             else if (bUseKITTI)
@@ -193,6 +195,8 @@ private:
     void detectFeature(cv::Mat &cvImage, std::vector<cv::Point2f> &vKp);
     void trackFeature(cv::Mat &cvLeftImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked);
 
+    bool checkParallax(std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked);
+
     void   findRT(cv::Mat &cvRotMat, cv::Mat &cvTransMat, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked);
     double findScale(cv::Mat &cvLeftImage, cv::Mat &cvRightImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked, cv::Mat &cvRotMat, cv::Mat &cvTransMat);
 
@@ -202,6 +206,7 @@ private:
     void readKitti(cv::Mat &cvLeftImage, cv::Mat &cvRightImage);
     void readPubKittiGT();
 
+    void pubGT();
     void broadTF();
 
     rclcpp::TimerBase::SharedPtr timer_;
@@ -265,6 +270,8 @@ private:
     cv::Mat cvCurT;
     nav_msgs::msg::Path msgPath;
     nav_msgs::msg::Path msgGtPath;
+    double dParallaxThresh;
+
 
     // source
     bool bUseCamera;
@@ -352,34 +359,7 @@ void ImagePublisher::odom_process()
             }
         }
 
-        std::string fromFrameRel = "base_footprint";
-        std::string toFrameRel = "odom";
-
-        geometry_msgs::msg::TransformStamped msgTF;
-
-        try{
-            msgTF = tf_buffer_->lookupTransform(toFrameRel,fromFrameRel,tf2::TimePointZero);
-        }
-        catch(tf2::TransformException &ex){
-            RCLCPP_INFO(
-            this->get_logger(), "Could not transform %s to %s: %s",
-            toFrameRel.c_str(), fromFrameRel.c_str(), ex.what());
-        }
-        if(nFrameCount == FIRST_FRAME){
-            cvFirstPosition.at<double>(0,0) = msgTF.transform.translation.x;
-            cvFirstPosition.at<double>(1,0) = msgTF.transform.translation.y;
-            cvFirstPosition.at<double>(2,0) = msgTF.transform.translation.z;
-        }
-        else{
-            geometry_msgs::msg::PoseStamped poseStamp;
-            poseStamp.pose.position.x = msgTF.transform.translation.x - cvFirstPosition.at<double>(0,0);
-            poseStamp.pose.position.y = msgTF.transform.translation.y - cvFirstPosition.at<double>(1,0);
-            poseStamp.pose.position.z = msgTF.transform.translation.z - cvFirstPosition.at<double>(2,0);
-
-            msgGtPath.poses.push_back(poseStamp);
-
-            gtPathPublisher_->publish(msgGtPath);
-        }
+        pubGT();
 
     }
     else if (bUseKITTI)
@@ -404,7 +384,7 @@ void ImagePublisher::odom_process()
         // }
         else
         {
-            processFrame(cvLeftImage, cvRightImage);
+            result = processFrame(cvLeftImage, cvRightImage);
             visualizePath();
         }
 
@@ -429,40 +409,21 @@ void ImagePublisher::processFirstFrame(cv::Mat &cvLeftImage)
     nFrameCount++;
 }
 
-void ImagePublisher::processSecondFrame(cv::Mat &cvLeftImage)
-{
-    std::vector<cv::Point2f> vRefKpLeftTracked;
-    std::vector<cv::Point2f> vCurKpLeftTracked;
-    trackFeature(cvLeftImage, vRefKpLeftTracked, vCurKpLeftTracked);
-
-    cv::Mat cvRotMat;
-    cv::Mat cvTransMat;
-    findRT(cvRotMat, cvTransMat, vRefKpLeftTracked, vCurKpLeftTracked);
-
-    RCLCPP_INFO(this->get_logger(), "tx : %lf", cvTransMat.at<double>(0, 0));
-    RCLCPP_INFO(this->get_logger(), "ty : %lf", cvTransMat.at<double>(1, 0));
-    RCLCPP_INFO(this->get_logger(), "tz : %lf", cvTransMat.at<double>(2, 0));
-
-    if (static_cast<int>(vCurKpLeftTracked.size()) < nMinFeatureNum)
-    {
-        detectFeature(cvLeftImage, vRefKpLeft);
-    }
-    else
-    {
-        vRefKpLeft = vCurKpLeftTracked;
-    }
-
-    cvCurR = cvRotMat;
-    cvCurT = cvTransMat;
-    nFrameCount++;
-}
-
 bool ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
 {
     // RCLCPP_INFO(this->get_logger(), "process frame start");
     std::vector<cv::Point2f> vRefKpLeftTracked;
     std::vector<cv::Point2f> vCurKpLeftTracked;
     trackFeature(cvLeftImage, vRefKpLeftTracked, vCurKpLeftTracked);
+
+    // check parallax
+    // if(!checkParallax(vRefKpLeftTracked,vCurKpLeftTracked)){
+    //     RCLCPP_INFO(this->get_logger(), "Too Small parallax!!!");
+    //     RCLCPP_INFO(this->get_logger(), "Too Small parallax!!!");
+    //     RCLCPP_INFO(this->get_logger(), "Too Small parallax!!!");
+        
+    //     return false;
+    // }
 
     // RCLCPP_INFO(this->get_logger(), "Ref Size : %d", vCurKpLeftTmp.size());
     RCLCPP_INFO(this->get_logger(), "Cur Tracked Size : %d", vCurKpLeftTracked.size());
@@ -481,7 +442,7 @@ bool ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
     double dScale = findScale(cvLeftImage, cvRightImage, vRefKpLeftTracked, vCurKpLeftTracked, cvRotMat, cvTransMat);
 
     //if (!std::isnan(dScale) && dScale > 0.1 && dScale < 5.0)
-    if (!std::isnan(dScale) && dScale > 0.01 && dScale < 2.0)
+    if (!std::isnan(dScale) && dScale > 0.1 && dScale < 2.0)
     {
         cvCurT = cvCurT + dScale * cvCurR * cvTransMat;
         cvCurR = cvCurR * cvRotMat;
@@ -775,6 +736,29 @@ void ImagePublisher::trackFeature(cv::Mat &cvLeftImage, std::vector<cv::Point2f>
     tTrackTime.interval("Feature Tracking");
 }
 
+bool ImagePublisher::checkParallax(std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked)
+{
+    double dSumParallax = 0;
+    double dAverageParallax;
+    int nVecSize = static_cast<int>(vRefKpLeftTracked.size());
+    for(int i = 0; i < nVecSize; i++){
+        double dX = vRefKpLeftTracked[i].x - vCurKpLeftTracked[i].x;
+        double dY = vRefKpLeftTracked[i].y - vCurKpLeftTracked[i].y;
+        double dParallax = std::sqrt((dX * dX) + (dY * dY));
+        dSumParallax += dParallax;
+    }
+
+    dAverageParallax = dSumParallax / static_cast<double>(nVecSize);
+
+    if(dAverageParallax > dParallaxThresh){
+        return true;
+    }
+    else{
+        return false;
+    }
+
+}
+
 void ImagePublisher::visualizeFeature(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
 {
     cv::Mat cvVisualLeft = cvLeftImage;
@@ -880,6 +864,39 @@ void ImagePublisher::readPubKittiGT()
     }
 }
 
+void ImagePublisher::pubGT()
+{
+    std::string fromFrameRel = "base_footprint";
+    std::string toFrameRel = "odom";
+
+    geometry_msgs::msg::TransformStamped msgTF;
+
+    try{
+        msgTF = tf_buffer_->lookupTransform(toFrameRel,fromFrameRel,tf2::TimePointZero);
+    }
+    catch(tf2::TransformException &ex){
+        RCLCPP_INFO(
+        this->get_logger(), "Could not transform %s to %s: %s",
+        toFrameRel.c_str(), fromFrameRel.c_str(), ex.what());
+    }
+    if(nFrameCount == FIRST_FRAME){
+        cvFirstPosition.at<double>(0,0) = msgTF.transform.translation.x;
+        cvFirstPosition.at<double>(1,0) = msgTF.transform.translation.y;
+        cvFirstPosition.at<double>(2,0) = msgTF.transform.translation.z;
+    }
+    else{
+        geometry_msgs::msg::PoseStamped poseStamp;
+        poseStamp.pose.position.x = msgTF.transform.translation.x - cvFirstPosition.at<double>(0,0);
+        poseStamp.pose.position.y = msgTF.transform.translation.y - cvFirstPosition.at<double>(1,0);
+        poseStamp.pose.position.z = msgTF.transform.translation.z - cvFirstPosition.at<double>(2,0);
+
+        msgGtPath.poses.push_back(poseStamp);
+
+        gtPathPublisher_->publish(msgGtPath);
+    }
+
+}
+
 void ImagePublisher::broadTF()
 {
     rclcpp::Time now = this->get_clock()->now();
@@ -903,3 +920,34 @@ void ImagePublisher::broadTF()
 
     tf_publisher_->sendTransform(msgTF);
 }
+
+
+
+
+// void ImagePublisher::processSecondFrame(cv::Mat &cvLeftImage)
+// {
+//     std::vector<cv::Point2f> vRefKpLeftTracked;
+//     std::vector<cv::Point2f> vCurKpLeftTracked;
+//     trackFeature(cvLeftImage, vRefKpLeftTracked, vCurKpLeftTracked);
+
+//     cv::Mat cvRotMat;
+//     cv::Mat cvTransMat;
+//     findRT(cvRotMat, cvTransMat, vRefKpLeftTracked, vCurKpLeftTracked);
+
+//     RCLCPP_INFO(this->get_logger(), "tx : %lf", cvTransMat.at<double>(0, 0));
+//     RCLCPP_INFO(this->get_logger(), "ty : %lf", cvTransMat.at<double>(1, 0));
+//     RCLCPP_INFO(this->get_logger(), "tz : %lf", cvTransMat.at<double>(2, 0));
+
+//     if (static_cast<int>(vCurKpLeftTracked.size()) < nMinFeatureNum)
+//     {
+//         detectFeature(cvLeftImage, vRefKpLeft);
+//     }
+//     else
+//     {
+//         vRefKpLeft = vCurKpLeftTracked;
+//     }
+
+//     cvCurR = cvRotMat;
+//     cvCurT = cvTransMat;
+//     nFrameCount++;
+// }

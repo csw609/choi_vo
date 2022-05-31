@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <string>
+#include <rclcpp/rclcpp.hpp>
 //#include <ros/ros.h>
 //#include "rclcpp/rclcpp.hpp"
 #include <iostream>
@@ -23,8 +24,9 @@ namespace seok {
             t2 = std::chrono::system_clock::now();
             std::chrono::duration<double> dur = t2 - t1;
 
-            std::cout << "Time taken for " << str  << " : " << dur.count() << " s" << "\n";
+            //std::cout << "Time taken for " << str  << " : " << dur.count() << " s" << "\n";
             //ROS_INFO("Time taken for %s : %lfs", str.c_str() , dur.count());
+            RCLCPP_INFO(this->get_logger(), "Cur Tracked Size : %d", vCurKpLeftTracked.size());
         }
 
     private:
