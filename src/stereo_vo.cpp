@@ -3,7 +3,7 @@
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<ImagePublisher>());
+  rclcpp::spin(std::make_shared<VisualOdometry>());
   rclcpp::shutdown();
 
   return 0;

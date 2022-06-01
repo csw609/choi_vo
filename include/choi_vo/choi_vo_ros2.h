@@ -39,11 +39,11 @@ using std::placeholders::_1;
 // image size
 // image rgb->mono cvt time reduce
 
-class ImagePublisher : public rclcpp::Node
+class VisualOdometry : public rclcpp::Node
 {
 public:
-    ImagePublisher()
-        : Node("image_publisher"), count_(0)
+    VisualOdometry()
+        : Node("VisualOdometry"), count_(0)
     {
         RCLCPP_INFO(this->get_logger(), "choi VO Init!");
         publisher_ = this->create_publisher<std_msgs::msg::String>("topic", 10);
@@ -52,8 +52,8 @@ public:
         pathPublisher_ = this->create_publisher<nav_msgs::msg::Path>("path", 10);
         gtPathPublisher_ = this->create_publisher<nav_msgs::msg::Path>("path_gt", 10);
 
-        img1Subscription_ = this->create_subscription<sensor_msgs::msg::Image>("/camera/image_raw", 10, std::bind(&ImagePublisher::img1_callback, this, _1));
-        img2Subscription_ = this->create_subscription<sensor_msgs::msg::Image>("/camera2/image_raw", 10, std::bind(&ImagePublisher::img2_callback, this, _1));
+        img1Subscription_ = this->create_subscription<sensor_msgs::msg::Image>("/camera/image_raw", 10, std::bind(&VisualOdometry::img1_callback, this, _1));
+        img2Subscription_ = this->create_subscription<sensor_msgs::msg::Image>("/camera2/image_raw", 10, std::bind(&VisualOdometry::img2_callback, this, _1));
 
         // Init Information
         nFrameCount = FIRST_FRAME;
@@ -178,8 +178,8 @@ public:
         cvFirstPosition = cv::Mat::zeros(3,1,CV_64FC1);
         tf_publisher_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this);
 
-        // timer_ = this->create_wall_timer(500ms, std::bind(&ImagePublisher::timer_callback,this));
-        timer_ = this->create_wall_timer(30ms, std::bind(&ImagePublisher::odom_process, this));
+        // timer_ = this->create_wall_timer(500ms, std::bind(&VisualOdometry::timer_callback,this));
+        timer_ = this->create_wall_timer(30ms, std::bind(&VisualOdometry::odom_process, this));
     }
 
 private:
@@ -285,7 +285,7 @@ private:
     std::shared_ptr<tf2_ros::StaticTransformBroadcaster> tf_publisher_;
 };
 
-void ImagePublisher::timer_callback()
+void VisualOdometry::timer_callback()
 {
     auto message = std_msgs::msg::String();
     message.data = "Hello World!" + std::to_string(count_++);
@@ -303,7 +303,7 @@ void ImagePublisher::timer_callback()
     img1Publisher_->publish(*img_msg.get());
 }
 
-void ImagePublisher::odom_process()
+void VisualOdometry::odom_process()
 {
     // RCLCPP_INFO(this->get_logger(), " %s ", cv::getBuildInformation().c_str());
 
@@ -372,7 +372,7 @@ void ImagePublisher::odom_process()
     {
         RCLCPP_INFO(this->get_logger(), "Image Converted Well");
         RCLCPP_INFO(this->get_logger(), " frame count %d", nFrameCount);
-        bool result = true;
+        bool bResult = true;
 
         if (nFrameCount == FIRST_FRAME)
         {
@@ -384,11 +384,11 @@ void ImagePublisher::odom_process()
         // }
         else
         {
-            result = processFrame(cvLeftImage, cvRightImage);
+            bResult = processFrame(cvLeftImage, cvRightImage);
             visualizePath();
         }
 
-        if (result)
+        if (bResult)
         {
             cvPrevLeftImage = cvLeftImage;
         }
@@ -403,14 +403,14 @@ void ImagePublisher::odom_process()
     RCLCPP_INFO(this->get_logger(), "%s", strInterval.c_str());
 }
 
-void ImagePublisher::processFirstFrame(cv::Mat &cvLeftImage)
+void VisualOdometry::processFirstFrame(cv::Mat &cvLeftImage)
 {
 
     detectFeature(cvLeftImage, vRefKpLeft);
     nFrameCount++;
 }
 
-bool ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
+bool VisualOdometry::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
 {
     // RCLCPP_INFO(this->get_logger(), "process frame start");
     std::vector<cv::Point2f> vRefKpLeftTracked;
@@ -419,10 +419,6 @@ bool ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
 
     // check parallax
     // if(!checkParallax(vRefKpLeftTracked,vCurKpLeftTracked)){
-    //     RCLCPP_INFO(this->get_logger(), "Too Small parallax!!!");
-    //     RCLCPP_INFO(this->get_logger(), "Too Small parallax!!!");
-    //     RCLCPP_INFO(this->get_logger(), "Too Small parallax!!!");
-        
     //     return false;
     // }
 
@@ -450,27 +446,18 @@ bool ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
     }
 
     //seok::TimeChecker tVecTime;
-    if (bUseFAST)
-    {
+    if (bUseFAST){
         if (static_cast<int>(vCurKpLeftTracked.size()) < nMinFeatureNum)
-        {
             detectFeature(cvLeftImage, vRefKpLeft);
-        }
         else
-        {
             vRefKpLeft = vCurKpLeftTracked;
-        }
     }
     else if (bUseGFTT)
     {
         if (static_cast<int>(vCurKpLeftTracked.size()) < nMaxFeatureNumGFTT)
-        {
             detectFeature(cvLeftImage, vRefKpLeft);
-        }
         else
-        {
             vRefKpLeft = vCurKpLeftTracked;
-        }
     }
 
     //tVecTime.interval("vector copy");
@@ -479,7 +466,7 @@ bool ImagePublisher::processFrame(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
     return true;
 }
 
-double ImagePublisher::findScale(cv::Mat &cvLeftImage, cv::Mat &cvRightImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked, cv::Mat &cvRotMat, cv::Mat &cvTransMat)
+double VisualOdometry::findScale(cv::Mat &cvLeftImage, cv::Mat &cvRightImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked, cv::Mat &cvRotMat, cv::Mat &cvTransMat)
 {
     double dScale = 1.0;
     // estimate monocular depth
@@ -595,7 +582,7 @@ double ImagePublisher::findScale(cv::Mat &cvLeftImage, cv::Mat &cvRightImage, st
 
         //cv::triangulatePoints(cvProjId, cvProjL2R,vCurKpStereoLeftNorm,vCurKpStereoRightNorm,cvStereoDep4D);
 
-        cv::triangulatePoints(cvProjC2W, cvProjR2W,vCurKpStereoLeftNorm,vCurKpStereoRightNorm,cvStereoDep4D);
+        cv::triangulatePoints(cvProjC2W, cvProjR2W, vCurKpStereoLeftNorm, vCurKpStereoRightNorm, cvStereoDep4D);
 
         for(int i = 0; i < nVecSize; i++){
             if(vCurStatus[i]){
@@ -681,7 +668,7 @@ double ImagePublisher::findScale(cv::Mat &cvLeftImage, cv::Mat &cvRightImage, st
     // return 1.0;
 }
 
-void ImagePublisher::findRT(cv::Mat &cvRotMat, cv::Mat &cvTransMat, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked)
+void VisualOdometry::findRT(cv::Mat &cvRotMat, cv::Mat &cvTransMat, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked)
 {
 
     // later consider distortion
@@ -696,7 +683,7 @@ void ImagePublisher::findRT(cv::Mat &cvRotMat, cv::Mat &cvTransMat, std::vector<
     //tReTime.interval("recover");
 }
 
-void ImagePublisher::detectFeature(cv::Mat &cvImage, std::vector<cv::Point2f> &vKp)
+void VisualOdometry::detectFeature(cv::Mat &cvImage, std::vector<cv::Point2f> &vKp)
 {
 
     if (bUseFAST)
@@ -718,7 +705,7 @@ void ImagePublisher::detectFeature(cv::Mat &cvImage, std::vector<cv::Point2f> &v
     }
 }
 
-void ImagePublisher::trackFeature(cv::Mat &cvLeftImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked)
+void VisualOdometry::trackFeature(cv::Mat &cvLeftImage, std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked)
 {
     std::vector<cv::Point2f> vCurKpLeftTmp;
     std::vector<uchar> vCurStatus;
@@ -740,7 +727,7 @@ void ImagePublisher::trackFeature(cv::Mat &cvLeftImage, std::vector<cv::Point2f>
     //tTrackTime.interval("Feature Tracking");
 }
 
-bool ImagePublisher::checkParallax(std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked)
+bool VisualOdometry::checkParallax(std::vector<cv::Point2f> &vRefKpLeftTracked, std::vector<cv::Point2f> &vCurKpLeftTracked)
 {
     double dSumParallax = 0;
     double dAverageParallax;
@@ -763,7 +750,7 @@ bool ImagePublisher::checkParallax(std::vector<cv::Point2f> &vRefKpLeftTracked, 
 
 }
 
-void ImagePublisher::visualizeFeature(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
+void VisualOdometry::visualizeFeature(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
 {
     cv::Mat cvVisualLeft = cvLeftImage;
     for (auto &pts : vRefKpLeft)
@@ -785,7 +772,7 @@ void ImagePublisher::visualizeFeature(cv::Mat &cvLeftImage, cv::Mat &cvRightImag
     // img2Publisher_->publish(imageVisual2);
 }
 
-void ImagePublisher::visualizePath()
+void VisualOdometry::visualizePath()
 {
     geometry_msgs::msg::PoseStamped poseStamp;
 
@@ -798,19 +785,19 @@ void ImagePublisher::visualizePath()
     pathPublisher_->publish(msgPath);
 }
 
-void ImagePublisher::img1_callback(const sensor_msgs::msg::Image::SharedPtr imgMsg_)
+void VisualOdometry::img1_callback(const sensor_msgs::msg::Image::SharedPtr imgMsg_)
 {
     // RCLCPP_INFO(this->get_logger(), "img1 subscribed");
     left_image_buf.push(imgMsg_);
 }
 
-void ImagePublisher::img2_callback(const sensor_msgs::msg::Image::SharedPtr imgMsg_)
+void VisualOdometry::img2_callback(const sensor_msgs::msg::Image::SharedPtr imgMsg_)
 {
     // RCLCPP_INFO(this->get_logger(), "img2 subscribed");
     right_image_buf.push(imgMsg_);
 }
 
-void ImagePublisher::readKitti(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
+void VisualOdometry::readKitti(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
 {
     std::string img_l_path;
     std::string img_r_path;
@@ -840,7 +827,7 @@ void ImagePublisher::readKitti(cv::Mat &cvLeftImage, cv::Mat &cvRightImage)
     cvRightImage = cv::imread(img_r_path, cv::IMREAD_GRAYSCALE);
 }
 
-void ImagePublisher::readPubKittiGT()
+void VisualOdometry::readPubKittiGT()
 {
     std::string strGT;
     std::getline(fsGroundTruth, strGT);
@@ -868,7 +855,7 @@ void ImagePublisher::readPubKittiGT()
     }
 }
 
-void ImagePublisher::pubGT()
+void VisualOdometry::pubGT()
 {
     std::string fromFrameRel = "base_footprint";
     std::string toFrameRel = "odom";
@@ -901,7 +888,7 @@ void ImagePublisher::pubGT()
 
 }
 
-void ImagePublisher::broadTF()
+void VisualOdometry::broadTF()
 {
     rclcpp::Time now = this->get_clock()->now();
     geometry_msgs::msg::TransformStamped msgTF;
@@ -928,7 +915,7 @@ void ImagePublisher::broadTF()
 
 
 
-// void ImagePublisher::processSecondFrame(cv::Mat &cvLeftImage)
+// void VisualOdometry::processSecondFrame(cv::Mat &cvLeftImage)
 // {
 //     std::vector<cv::Point2f> vRefKpLeftTracked;
 //     std::vector<cv::Point2f> vCurKpLeftTracked;
